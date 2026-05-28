@@ -1,40 +1,56 @@
-import subprocess
-import time
+import argparse
+import atexit
 import json
 import os
-import sys
 import signal
-import atexit
+import subprocess
+import sys
 import tempfile
-import argparse
+import threading
+import time
 import urllib.parse
+from collections import deque
+from datetime import datetime
 
 import requests
 from colorama import Fore, Style, init
 
 init(autoreset=True)
 
-_xray_name   = "xray.exe" if sys.platform == "win32" else "xray"
-XRAY         = os.path.join(os.path.dirname(os.path.abspath(__file__)), _xray_name)
+_xray_name = "xray.exe" if sys.platform == "win32" else "xray"
+XRAY = os.path.join(os.path.dirname(os.path.abspath(__file__)), _xray_name)
 CONFIGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs.txt")
-XRAY_CONFIG  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xrayconfig.json")
+XRAY_CONFIG = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "xrayconfig.json"
+)
+HISTORY_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "config_history.json"
+)
 
-SOCKS_PORT     = 4567
-SOCKS_LISTEN   = "0.0.0.0"
-SNI_PORT       = 40443
+SOCKS_PORT = 4567
+SOCKS_LISTEN = "0.0.0.0"
+SNI_PORT = 40443
 BASE_TEST_PORT = 19000
-TEST_URL       = "https://cachefly.cachefly.net/1mb.test"
-TEST_TIMEOUT   = 15
+TEST_URL = "https://cachefly.cachefly.net/1mb.test"
+TEST_TIMEOUT = 15
 CHECK_INTERVAL = 30 * 60
 
+# ── Scoring system weights ─────────────────────────────────────────────────────
+W_SPEED = 0.4  # Weight for raw speed score
+W_STABILITY = 0.6  # Weight for stability score
+SWITCH_THRESHOLD = 0.2  # 20% - switch only if new config is this much better
+HISTORY_WINDOW = 6  # Keep last 6 test results per config
 
-# ── Cleanup: always kill Xray on exit ─────────────────────────────────────────
-
+# ── Global state ───────────────────────────────────────────────────────────────
 _active_proc = None
+config_history = {}  # {config_name: deque([(timestamp, speed, success), ...])}
+history_lock = threading.Lock()
+
 
 def _set_active_proc(proc):
     global _active_proc
     _active_proc = proc
+
 
 def _cleanup():
     if _active_proc and _active_proc.poll() is None:
@@ -46,15 +62,103 @@ def _cleanup():
             _active_proc.kill()
         print(Fore.GREEN + "Xray stopped.")
 
+    # Save history on exit
+    save_history()
+
+
 atexit.register(_cleanup)
 
 if sys.platform != "win32":
+
     def _sigterm_handler(signum, frame):
         sys.exit(0)
+
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
 
-# ── Parsers ────────────────────────────────────────────────────────────────────
+# ── History management ─────────────────────────────────────────────────────────
+
+
+def load_history():
+    """Load config performance history from disk"""
+    global config_history
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                data = json.load(f)
+                # Convert stored lists back to deques
+                for name, entries in data.items():
+                    config_history[name] = deque(
+                        [(e[0], e[1], e[2]) for e in entries], maxlen=HISTORY_WINDOW
+                    )
+        except Exception:
+            pass
+
+
+def save_history():
+    """Save config performance history to disk"""
+    with history_lock:
+        serializable = {}
+        for name, entries in config_history.items():
+            serializable[name] = list(entries)
+        try:
+            with open(HISTORY_FILE, "w") as f:
+                json.dump(serializable, f, indent=2)
+        except Exception:
+            pass
+
+
+def update_history(config_name, speed, success):
+    """Record a test result for a config"""
+    with history_lock:
+        if config_name not in config_history:
+            config_history[config_name] = deque(maxlen=HISTORY_WINDOW)
+        config_history[config_name].append((time.time(), speed, success))
+
+
+def calculate_score(config_name, current_speed):
+    """
+    Calculate weighted score combining speed and stability.
+    Score = (W_SPEED * speed_score) + (W_STABILITY * stability_score)
+    Returns 0 if no history or all failures.
+    """
+    with history_lock:
+        if config_name not in config_history or len(config_history[config_name]) == 0:
+            # No history - use only current speed
+            return current_speed * W_SPEED
+
+        entries = config_history[config_name]
+
+        # Calculate stability: proportion of successful tests
+        successes = sum(1 for _, _, success in entries if success)
+        stability_score = successes / len(entries) if entries else 0
+
+        # Calculate moving average speed (only successful tests)
+        successful_speeds = [speed for _, speed, success in entries if success]
+        avg_speed = (
+            sum(successful_speeds) / len(successful_speeds) if successful_speeds else 0
+        )
+
+        # Weighted score
+        return (W_SPEED * current_speed) + (W_STABILITY * stability_score * avg_speed)
+
+
+def get_consecutive_failures(config_name):
+    """Count consecutive failures for a config"""
+    with history_lock:
+        if config_name not in config_history:
+            return 0
+        count = 0
+        for _, _, success in reversed(config_history[config_name]):
+            if not success:
+                count += 1
+            else:
+                break
+        return count
+
+
+# ── Parsers (unchanged from original) ──────────────────────────────────────────
+
 
 def _build_stream(params):
     network = params.get("type", "tcp")
@@ -76,16 +180,10 @@ def _build_stream(params):
 
     allow_insecure = params.get("insecure", "0") == "1"
 
-    stream = {
-        "network": network,
-        "security": security
-    }
+    stream = {"network": network, "security": security}
 
     if security == "tls":
-        tls_settings = {
-            "serverName": sni,
-            "allowInsecure": allow_insecure
-        }
+        tls_settings = {"serverName": sni, "allowInsecure": allow_insecure}
 
         if fp:
             tls_settings["fingerprint"] = fp
@@ -100,48 +198,34 @@ def _build_stream(params):
             "serverName": sni,
             "fingerprint": fp or "chrome",
             "publicKey": pbk,
-            "shortId": sid
+            "shortId": sid,
         }
 
         stream["realitySettings"] = reality_settings
 
     if network == "ws":
-        stream["wsSettings"] = {
-            "path": path,
-            "headers": {
-                "Host": host
-            }
-        }
+        stream["wsSettings"] = {"path": path, "headers": {"Host": host}}
 
     elif network == "grpc":
         stream["grpcSettings"] = {
             "serviceName": service_name,
             "authority": authority,
-            "multiMode": False
+            "multiMode": False,
         }
 
     elif network == "httpupgrade":
-        stream["httpupgradeSettings"] = {
-            "path": path,
-            "host": host
-        }
+        stream["httpupgradeSettings"] = {"path": path, "host": host}
 
     elif network == "xhttp":
         stream["xhttpSettings"] = {
             "path": path,
             "host": host,
             "mode": mode,
-            "extra": {
-                "xPaddingBytes": "100-1000",
-                "scMaxEachPostBytes": "1000000"
-            }
+            "extra": {"xPaddingBytes": "100-1000", "scMaxEachPostBytes": "1000000"},
         }
 
     elif network == "splithttp":
-        stream["splithttpSettings"] = {
-            "path": path,
-            "host": host
-        }
+        stream["splithttpSettings"] = {"path": path, "host": host}
 
     if flow:
         if "vnext" in params:
@@ -157,13 +241,17 @@ def parse_vless(uri, name):
         "name": name,
         "protocol": "vless",
         "settings": {
-            "vnext": [{
-                "address": "127.0.0.1",
-                "port": SNI_PORT,
-                "users": [{"id": parsed.username, "encryption": "none", "level": 0}]
-            }]
+            "vnext": [
+                {
+                    "address": "127.0.0.1",
+                    "port": SNI_PORT,
+                    "users": [
+                        {"id": parsed.username, "encryption": "none", "level": 0}
+                    ],
+                }
+            ]
         },
-        "streamSettings": _build_stream(params)
+        "streamSettings": _build_stream(params),
     }
 
 
@@ -174,14 +262,16 @@ def parse_trojan(uri, name):
         "name": name,
         "protocol": "trojan",
         "settings": {
-            "servers": [{
-                "address": "127.0.0.1",
-                "port": SNI_PORT,
-                "password": urllib.parse.unquote(parsed.username),
-                "level": 1
-            }]
+            "servers": [
+                {
+                    "address": "127.0.0.1",
+                    "port": SNI_PORT,
+                    "password": urllib.parse.unquote(parsed.username),
+                    "level": 1,
+                }
+            ]
         },
-        "streamSettings": _build_stream(params)
+        "streamSettings": _build_stream(params),
     }
 
 
@@ -199,7 +289,8 @@ def parse_uri(uri):
     return None
 
 
-# ── Config loading ─────────────────────────────────────────────────────────────
+# ── Config loading (unchanged) ──────────────────────────────────────────────────
+
 
 def fetch_subscription(url):
     try:
@@ -210,6 +301,7 @@ def fetch_subscription(url):
         if "vless://" not in content and "trojan://" not in content:
             try:
                 import base64
+
                 padding = len(content) % 4
                 if padding:
                     content += "=" * (4 - padding)
@@ -252,7 +344,9 @@ def load_configs(path):
                 skipped += 1
 
     if skipped:
-        print(Fore.YELLOW + f"Warning: {skipped} line(s) skipped (unsupported protocol)")
+        print(
+            Fore.YELLOW + f"Warning: {skipped} line(s) skipped (unsupported protocol)"
+        )
     if not servers:
         print(Fore.RED + "Error: no valid configs found")
         sys.exit(1)
@@ -262,76 +356,42 @@ def load_configs(path):
     return servers
 
 
-# ── Xray process management ────────────────────────────────────────────────────
+# ── Xray process management (unchanged) ────────────────────────────────────────
+
 
 def build_xray_config(server):
     return {
-        "log": {
-            "loglevel": "warning"
-        },
-
+        "log": {"loglevel": "warning"},
         "dns": {
             "servers": [
-                {
-                    "address": "https://1.1.1.1/dns-query",
-                    "skipFallback": False
-                },
-                {
-                    "address": "8.8.8.8",
-                    "skipFallback": False
-                }
+                {"address": "https://1.1.1.1/dns-query", "skipFallback": False},
+                {"address": "8.8.8.8", "skipFallback": False},
             ]
         },
-
         "inbounds": [
             {
                 "tag": "socks",
                 "port": SOCKS_PORT,
                 "listen": SOCKS_LISTEN,
                 "protocol": "socks",
-                "settings": {
-                    "auth": "noauth",
-                    "udp": True
-                },
-                "sniffing": {
-                    "enabled": True,
-                    "destOverride": [
-                        "http",
-                        "tls",
-                        "quic"
-                    ]
-                }
+                "settings": {"auth": "noauth", "udp": True},
+                "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]},
             }
         ],
-
         "outbounds": [
             {
                 "tag": "proxy",
                 "protocol": server["protocol"],
                 "settings": server["settings"],
                 "streamSettings": server["streamSettings"],
-                "mux": {
-                    "enabled": False,
-                    "concurrency": -1
-                }
+                "mux": {"enabled": False, "concurrency": -1},
             },
-
-            {
-                "tag": "direct",
-                "protocol": "freedom"
-            },
-
-            {
-                "tag": "block",
-                "protocol": "blackhole"
-            }
+            {"tag": "direct", "protocol": "freedom"},
+            {"tag": "block", "protocol": "blackhole"},
         ],
-
         "routing": {
             "domainStrategy": "IPIfNonMatch",
-
             "rules": [
-
                 {
                     "type": "field",
                     "ip": [
@@ -340,39 +400,42 @@ def build_xray_config(server):
                         "172.16.0.0/12",
                         "192.168.0.0/16",
                         "::1/128",
-                        "fc00::/7"
+                        "fc00::/7",
                     ],
-                    "outboundTag": "direct"
+                    "outboundTag": "direct",
                 },
-
                 {
                     "type": "field",
                     "network": "udp",
                     "port": "443",
-                    "outboundTag": "block"
-                }
-            ]
-        }
+                    "outboundTag": "block",
+                },
+            ],
+        },
     }
 
 
 def build_test_config(server, port):
     return {
         "log": {"loglevel": "none"},
-        "inbounds": [{
-            "tag": "socks",
-            "port": port,
-            "listen": "127.0.0.1",
-            "protocol": "socks",
-            "settings": {"auth": "noauth", "udp": False}
-        }],
-        "outbounds": [{
-            "tag": "proxy",
-            "protocol": server["protocol"],
-            "settings": server["settings"],
-            "streamSettings": server["streamSettings"],
-            "mux": {"enabled": False, "concurrency": -1}
-        }]
+        "inbounds": [
+            {
+                "tag": "socks",
+                "port": port,
+                "listen": "127.0.0.1",
+                "protocol": "socks",
+                "settings": {"auth": "noauth", "udp": False},
+            }
+        ],
+        "outbounds": [
+            {
+                "tag": "proxy",
+                "protocol": server["protocol"],
+                "settings": server["settings"],
+                "streamSettings": server["streamSettings"],
+                "mux": {"enabled": False, "concurrency": -1},
+            }
+        ],
     }
 
 
@@ -393,25 +456,40 @@ def launch_xray(server, current_proc):
     proc = subprocess.Popen(
         [XRAY, "run", "-c", XRAY_CONFIG],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stderr=subprocess.DEVNULL,
     )
     _set_active_proc(proc)
-    print(Fore.GREEN + f"Xray launched — PID {proc.pid} — SOCKS on {SOCKS_LISTEN}:{SOCKS_PORT}")
+    print(
+        Fore.GREEN
+        + f"Xray launched — PID {proc.pid} — SOCKS on {SOCKS_LISTEN}:{SOCKS_PORT}"
+    )
     return proc
 
 
-# ── Speed testing ──────────────────────────────────────────────────────────────
+# ── Speed testing (unchanged) ──────────────────────────────────────────────────
+
 
 def measure_speed(port):
     try:
         result = subprocess.run(
-            ["curl", "-s", "-o", "/dev/null",
-             "-w", "%{speed_download}",
-             "--proxy", f"socks5h://127.0.0.1:{port}",
-             "--connect-timeout", "5",
-             "--max-time", str(TEST_TIMEOUT),
-             TEST_URL],
-            capture_output=True, text=True, timeout=TEST_TIMEOUT + 3
+            [
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{speed_download}",
+                "--proxy",
+                f"socks5h://127.0.0.1:{port}",
+                "--connect-timeout",
+                "5",
+                "--max-time",
+                str(TEST_TIMEOUT),
+                TEST_URL,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=TEST_TIMEOUT + 3,
         )
         return float(result.stdout.strip()) / 1024 / 1024
     except Exception:
@@ -427,7 +505,7 @@ def test_server(server, port):
     proc = subprocess.Popen(
         [XRAY, "run", "-c", tmp.name],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stderr=subprocess.DEVNULL,
     )
     time.sleep(1.5)
     speed = measure_speed(port)
@@ -440,36 +518,191 @@ def test_server(server, port):
     return speed
 
 
-def run_tests(servers):
+# ── Enhanced testing with scoring ──────────────────────────────────────────────
+
+
+def run_tests(servers, current_best=None):
+    """
+    Test all servers and return results sorted by weighted score.
+    Also updates rolling history for each config.
+    """
     results = []
+
     for i, server in enumerate(servers):
         port = BASE_TEST_PORT + i
         print(f"  Testing {server['name']}...", end=" ", flush=True)
         speed = test_server(server, port)
-        if speed == 0:
+
+        # Update rolling history
+        success = speed > 0
+        update_history(server["name"], speed, success)
+
+        if not success:
             print(Fore.RED + "failed")
         else:
             print(Fore.YELLOW + f"{speed:.2f} MB/s")
-        results.append((server, speed))
-    results.sort(key=lambda x: x[1], reverse=True)
+
+        # Calculate weighted score
+        score = calculate_score(server["name"], speed) if success else 0
+        results.append((server, speed, score))
+
+    # Sort by weighted score descending
+    results.sort(key=lambda x: x[2], reverse=True)
     return results
 
 
-def print_results(ranked):
-    print(Fore.YELLOW + "\n--- Results ---")
-    for i, (s, spd) in enumerate(ranked):
-        if spd > 0:
-            marker = Fore.GREEN + " ✓ BEST" + Style.RESET_ALL if i == 0 else ""
-            print(f"  {i+1}. {s['name']}: {spd:.2f} MB/s{marker}")
-        # else:
-        #     print(Fore.RED + f"  {i+1}. {s['name']}: failed")
+def print_dynamic_display(ranked, current_best, interval, display_duration=5):
+    """
+    Show full results for a few seconds, then switch to top 3 + countdown.
+    """
+
+    def clear_screen():
+        os.system("cls" if os.name == "nt" else "clear")
+
+    def print_full_results():
+        clear_screen()
+        print(Fore.CYAN + "=" * 60)
+        print(Fore.CYAN + "  SPEED TEST RESULTS - COMPLETE OVERVIEW")
+        print(Fore.CYAN + "=" * 60)
+
+        for i, (s, spd, score) in enumerate(ranked):
+            name = s["name"][:40]
+            if spd > 0:
+                marker = Fore.GREEN + " ✓ BEST" if i == 0 else ""
+                consecutive = get_consecutive_failures(s["name"])
+                fail_info = f" [{consecutive} fails]" if consecutive > 0 else ""
+
+                # Get stability from history
+                with history_lock:
+                    entries = config_history.get(s["name"], [])
+                    successes = (
+                        sum(1 for _, _, succ in entries if succ) if entries else 0
+                    )
+                    stability = f"{successes}/{len(entries)}" if entries else "0/0"
+
+                print(
+                    Fore.WHITE + f"  {i + 1:2d}. {name:<40} {spd:6.2f} MB/s  "
+                    f"Score: {score:6.2f}  Stability: {stability}{fail_info}{marker}"
+                )
+            else:
+                consecutive = get_consecutive_failures(s["name"])
+                print(
+                    Fore.RED
+                    + f"  {i + 1:2d}. {name:<40} FAILED{' (consecutive: ' + str(consecutive) + ')' if consecutive else ''}"
+                )
+
+        if current_best:
+            print(Fore.GREEN + f"\n  ► Active: {current_best}")
+
+        print(Fore.YELLOW + f"\n  Full results shown for {display_duration}s...")
+
+    def print_compact_view(remaining_seconds):
+        clear_screen()
+        print(Fore.CYAN + "=" * 60)
+        print(Fore.CYAN + "  TOP 3 CONFIGS + COUNTDOWN")
+        print(Fore.CYAN + "=" * 60)
+
+        # Show only top 3 successful configs
+        successful = [(s, spd, score) for s, spd, score in ranked if spd > 0]
+        top3 = successful[:3]
+
+        for i, (s, spd, score) in enumerate(top3):
+            name = s["name"][:45]
+            if i == 0 and name == current_best:
+                print(
+                    Fore.GREEN
+                    + f"  #{i + 1} {name:<45} {spd:6.2f} MB/s  Score: {score:.2f} ★ ACTIVE"
+                )
+            else:
+                color = Fore.YELLOW if i == 0 else Fore.WHITE
+                print(
+                    color + f"  #{i + 1} {name:<45} {spd:6.2f} MB/s  Score: {score:.2f}"
+                )
+
+        # Show countdown timer
+        mins, secs = divmod(remaining_seconds, 60)
+        hours, mins = divmod(mins, 60)
+        time_str = (
+            f"{hours:02d}:{mins:02d}:{secs:02d}" if hours else f"{mins:02d}:{secs:02d}"
+        )
+
+        print(Fore.CYAN + f"\n  ⏱ Next test in: {time_str}")
+
+        # Simple progress bar
+        bar_length = 30
+        progress = (interval - remaining_seconds) / interval
+        filled = int(bar_length * progress)
+        bar = "█" * filled + "░" * (bar_length - filled)
+        print(Fore.CYAN + f"  [{bar}]")
+
+    # Show full results first
+    print_full_results()
+    time.sleep(display_duration)
+
+    # Then switch to compact view with countdown
+    remaining = interval - display_duration
+    if remaining > 0:
+        # Update display every second for the countdown
+        for sec in range(remaining, 0, -1):
+            print_compact_view(sec)
+            time.sleep(1)
+
+        # Final clear before new test cycle
+        clear_screen()
+    else:
+        # If interval is shorter than display duration, just show compact briefly
+        print_compact_view(remaining)
+        time.sleep(max(1, remaining))
+
+
+def should_switch(current_config_name, ranked_results):
+    """
+    Determine if we should switch to a new config using hysteresis.
+    Only switch if the best config's score is significantly better than current's.
+    """
+    if not current_config_name or not ranked_results:
+        return True
+
+    best_server, best_speed, best_score = ranked_results[0]
+
+    # If current is already the best, don't switch
+    if best_server["name"] == current_config_name:
+        return False
+
+    # If best has failed, don't switch
+    if best_speed == 0:
+        return False
+
+    # Find current config in results
+    current_entry = next(
+        (r for r in ranked_results if r[0]["name"] == current_config_name), None
+    )
+
+    if not current_entry:
+        # Current config not found in results (shouldn't happen normally)
+        return True
+
+    _, current_speed, current_score = current_entry
+
+    # Switch only if best score is significantly better
+    # (best_score > current_score * (1 + SWITCH_THRESHOLD) or current has failed)
+    if current_speed == 0:
+        return True
+
+    improvement = (
+        (best_score - current_score) / current_score
+        if current_score > 0
+        else float("inf")
+    )
+
+    return improvement > SWITCH_THRESHOLD
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Xray speed-based proxy balancer",
+        description="Xray speed-based proxy balancer with intelligent scoring",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
@@ -477,17 +710,42 @@ if __name__ == "__main__":
             "  python3 balancer.py --interval 300\n"
             "  python3 balancer.py --configs /path/to/configs.txt\n"
             "  python3 balancer.py --port 1080"
-        )
+        ),
     )
-    parser.add_argument("--dry-run",  action="store_true", help="Test configs and print results, do not launch Xray")
-    parser.add_argument("--interval", type=int, default=CHECK_INTERVAL, help=f"Seconds between re-tests (default: {CHECK_INTERVAL})")
-    parser.add_argument("--configs",  type=str, default=CONFIGS_FILE,   help="Path to configs.txt")
-    parser.add_argument("--port",     type=int, default=SOCKS_PORT,     help=f"SOCKS proxy port (default: {SOCKS_PORT})")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Test configs and print results, do not launch Xray",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=CHECK_INTERVAL,
+        help=f"Seconds between re-tests (default: {CHECK_INTERVAL})",
+    )
+    parser.add_argument(
+        "--configs", type=str, default=CONFIGS_FILE, help="Path to configs.txt"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=SOCKS_PORT,
+        help=f"SOCKS proxy port (default: {SOCKS_PORT})",
+    )
+    parser.add_argument(
+        "--display-time",
+        type=int,
+        default=5,
+        help="Seconds to show full results (default: 5)",
+    )
     args = parser.parse_args()
 
     SOCKS_PORT = args.port
-    servers    = load_configs(args.configs)
-    proc       = None
+    servers = load_configs(args.configs)
+    proc = None
+
+    # Load existing history
+    load_history()
 
     if args.dry_run:
         print(Fore.YELLOW + "=== DRY RUN — Xray will not be launched ===\n")
@@ -497,30 +755,60 @@ if __name__ == "__main__":
         try:
             current_best = None
             if os.path.exists(XRAY_CONFIG) and os.path.getsize(XRAY_CONFIG) > 0:
-                    print(Fore.GREEN + f"Xray config exists, starting xray---> ")
-                    proc = launch_xray(None, proc)
+                print(Fore.GREEN + f"Xray config exists, starting xray---> ")
+                proc = launch_xray(None, proc)
             else:
-                print(Fore.YELLOW + "Xray config missing, will start xray after running test--->")
+                print(
+                    Fore.YELLOW
+                    + "Xray config missing, will start xray after running test--->"
+                )
 
             while True:
                 print(Fore.YELLOW + "\n---------- Speed Test ----------")
-                ranked = run_tests(servers)
-                print_results(ranked)
+                ranked = run_tests(servers, current_best)
 
-                best_server, best_speed = ranked[0]
+                # Check if we should switch using hysteresis
+                if should_switch(current_best, ranked):
+                    best_server, best_speed, best_score = ranked[0]
 
-                if best_speed > 0 and best_server["name"] != current_best:
-                    print(Fore.GREEN + f"\nSwitching to {best_server['name']}...")
-                    proc = launch_xray(best_server, proc)
-                    current_best = best_server["name"]
-                elif best_server["name"] == current_best:
-                    print(Fore.YELLOW + f"\nKeeping current best: {current_best}")
+                    if best_speed > 0:
+                        print(Fore.GREEN + f"\nSwitching to {best_server['name']}...")
+                        proc = launch_xray(best_server, proc)
+                        current_best = best_server["name"]
+
+                        # Show improvement details
+                        if current_best:
+                            old_entry = next(
+                                (r for r in ranked if r[0]["name"] == current_best),
+                                None,
+                            )
+                            if old_entry:
+                                print(
+                                    Fore.CYAN
+                                    + f"  New score: {best_score:.2f} vs old: {old_entry[2]:.2f}"
+                                )
                 else:
-                    print(Fore.RED + "\nAll configs failed, keeping current config.")
+                    best_server, best_speed, best_score = ranked[0]
+                    if best_server["name"] == current_best:
+                        print(
+                            Fore.YELLOW
+                            + f"\nKeeping current best: {current_best} (score: {best_score:.2f})"
+                        )
+                    else:
+                        print(
+                            Fore.YELLOW
+                            + f"\nCurrent config {current_best} is still competitive, keeping it."
+                        )
 
-                print(Fore.YELLOW + f"\nNext check in {args.interval // 60}m {args.interval % 60}s...")
-                time.sleep(args.interval)
+                # Save history periodically
+                save_history()
+
+                # Dynamic display with countdown
+                print_dynamic_display(
+                    ranked, current_best, args.interval, args.display_time
+                )
 
         except KeyboardInterrupt:
             print(Fore.RED + "\n\nCTRL+C detected.")
+            save_history()
             sys.exit(0)
