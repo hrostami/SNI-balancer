@@ -1,10 +1,8 @@
 # SNI-Balancer
 
-An intelligent Xray config balancer for SNI-spoofing environments.
+An intelligent Xray config balancer for SNI-spoofing method.
 
 SNI-Balancer continuously benchmarks VLESS and Trojan configs using real latency and download speed tests, scores them based on performance history and stability, then automatically keeps the best config running through Xray as a LAN-accessible SOCKS5 proxy.
-
-Designed for censorship-heavy networks where SNI spoofing is required.
 
 No GUI clients required. No manual switching. Fully automated.
 
@@ -12,20 +10,20 @@ No GUI clients required. No manual switching. Fully automated.
 
 # Features
 
-* Automatic Xray download and update
-* Automatic SNI-spoofing binary management
-* Supports both Rust and Go SNI-spoofing backends
-* Real-world speed testing through actual proxy traffic
-* Latency-aware scoring system
-* Historical stability tracking
-* Exponential backoff for dead configs
-* Automatic failover and recovery
-* Subscription URL support
-* Cross-platform:
-
-  * Linux
-  * Windows
-  * macOS
+- Automatic Xray download and update
+- Automatic SNI-spoofing binary management
+- Supports both Rust and Go SNI-spoofing backends
+- Real-world speed testing through actual proxy traffic
+- Latency-aware scoring system
+- Historical stability tracking
+- Exponential backoff for dead configs
+- Automatic failover and recovery
+- Live dashboard
+- Subscription URL support
+- Cross-platform:
+  - Linux
+  - Windows
+  - macOS
 
 ---
 
@@ -34,15 +32,13 @@ No GUI clients required. No manual switching. Fully automated.
 1. Reads configs from `configs.txt`
 2. Starts temporary isolated Xray instances for testing
 3. Performs:
-
-   * health checks
-   * latency measurement
-   * real download speed tests
+   - health checks
+   - latency measurement
+   - real download speed tests
 4. Calculates a weighted score using:
-
-   * speed
-   * latency
-   * historical stability
+   - speed
+   - latency
+   - historical stability
 5. Launches the highest-scoring config
 6. Continuously re-tests configs at configurable intervals
 7. Automatically switches only when improvement exceeds a threshold
@@ -52,20 +48,20 @@ No GUI clients required. No manual switching. Fully automated.
 
 # Supported Protocols
 
-| Protocol | Supported Transports                    |
-| -------- | --------------------------------------- |
-| VLESS    | WS, gRPC, xHTTP, HTTPUpgrade, SplitHTTP |
-| Trojan   | WS, gRPC, xHTTP, HTTPUpgrade, SplitHTTP |
+| Protocol | Supported Transports |
+|---|---|
+| VLESS | WS, gRPC, xHTTP, HTTPUpgrade, SplitHTTP |
+| Trojan | WS, gRPC, xHTTP, HTTPUpgrade, SplitHTTP |
 
 
 ---
 
 # Requirements
 
-* Python 3.9+
-* `curl`
-* Internet access
-* SNI-spoofing backend
+- Python 3.9+
+- `curl`
+- Internet access
+- SNI-spoofing backend
 
 ---
 
@@ -74,7 +70,7 @@ No GUI clients required. No manual switching. Fully automated.
 ## Clone the repository
 
 ```bash
-git clone https://github.com/hrostami/sni-balancer.git
+git clone https://github.com/yourname/sni-balancer.git
 cd sni-balancer
 ```
 
@@ -87,11 +83,10 @@ pip install -r requirements.txt
 ## Create `configs.txt`
 
 Supports:
-
-* `vless://`
-* `trojan://`
-* Subscription URLs
-* Base64 subscriptions
+- `vless://`
+- `trojan://`
+- Subscription URLs
+- Base64 subscriptions
 
 Example:
 
@@ -147,18 +142,18 @@ python3 balancer.py --update-xray
 
 # Command Line Options
 
-| Argument         | Description                       |
-| ---------------- | --------------------------------- |
-| `--dry-run`      | Test configs only                 |
-| `--interval`     | Seconds between test cycles       |
-| `--configs`      | Custom configs file               |
-| `--port`         | SOCKS5 listen port                |
-| `--display-time` | Full dashboard display duration   |
-| `--test-size`    | Download test size in MB          |
-| `--update-xray`  | Download/update Xray              |
-| `--sni-variant`  | `rust` or `go`                    |
-| `--sni-connect`  | Upstream address for SNI spoofing |
-| `--sni-fake`     | Fake SNI hostname                 |
+| Argument | Description |
+|---|---|
+| `--dry-run` | Test configs only |
+| `--interval` | Seconds between test cycles |
+| `--configs` | Custom configs file |
+| `--port` | SOCKS5 listen port |
+| `--display-time` | Full dashboard display duration |
+| `--test-size` | Download test size in MB |
+| `--update-xray` | Download/update Xray |
+| `--sni-variant` | `rust` or `go` |
+| `--sni-connect` | Upstream address for SNI spoofing |
+| `--sni-fake` | Fake SNI hostname |
 
 ---
 
@@ -167,11 +162,17 @@ python3 balancer.py --update-xray
 This project requires an external SNI-spoofing process.
 
 Supported implementations:
-
-* Rust backend
-* Go backend
+- Rust backend
+- Go backend
 
 If the binary is missing, SNI-Balancer can automatically download it.
+
+Default values:
+
+```text
+Connect Address: 104.19.229.21:443
+Fake SNI: hcaptcha.com
+```
 
 ---
 
@@ -179,38 +180,37 @@ If the binary is missing, SNI-Balancer can automatically download it.
 
 Each config receives a weighted score:
 
-| Metric    | Weight |
-| --------- | ------ |
-| Speed     | 40%    |
-| Stability | 30%    |
-| Latency   | 30%    |
+| Metric | Weight |
+|---|---|
+| Speed | 40% |
+| Stability | 30% |
+| Latency | 30% |
 
 The balancer avoids unnecessary switching by requiring a minimum improvement threshold before changing the active config.
 
 Repeated failures trigger exponential backoff to avoid wasting resources on dead servers.
 
-
 ---
 
 # Generated Files
 
-| File                  | Description               |
-| --------------------- | ------------------------- |
-| `xrayconfig.json`     | Active Xray config        |
+| File | Description |
+|---|---|
+| `xrayconfig.json` | Active Xray config |
 | `config_history.json` | Historical benchmark data |
-| `balancer.log`        | Runtime logs              |
-| `.xray_version`       | Installed Xray version    |
+| `balancer.log` | Runtime logs |
+| `.xray_version` | Installed Xray version |
 
 ---
 
 # Notes
 
-* The SOCKS5 proxy listens on all interfaces by default (`0.0.0.0`)
-* Temporary Xray instances are created during testing
-* Dead configs are skipped intelligently using exponential backoff
-* Xray is automatically relaunched if it crashes
-* Duplicate config names are automatically deduplicated
-* All generated files should remain ignored in Git
+- The SOCKS5 proxy listens on all interfaces by default (`0.0.0.0`)
+- Temporary Xray instances are created during testing
+- Dead configs are skipped intelligently using exponential backoff
+- Xray is automatically relaunched if it crashes
+- Duplicate config names are automatically deduplicated
+- All generated files should remain ignored in Git
 
 ---
 
