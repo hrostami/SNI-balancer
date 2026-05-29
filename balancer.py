@@ -1176,9 +1176,10 @@ async def _curl_health_check(port):
         )
         stdout, _ = await proc.communicate()
         latency_ms = int((time.perf_counter() - start) * 1000)
-        success = stdout.decode().strip() == "200"
+        success = stdout.decode().strip() == "204"
         return success, latency_ms
-    except Exception:
+    except Exception as e:
+        print(f"Error in latency:{e}")
         return False, 0
 
 
@@ -1227,7 +1228,8 @@ def measure_speed(port, test_size=None):
         )
         speed_bytes = float(test_result)
         return speed_bytes / 1024 / 1024
-    except:
+    except Exception as e:
+        print(f"Error in speed test:{e}")
         return 0.0
 
 
