@@ -12,22 +12,20 @@ No GUI clients required. No manual switching. Fully automated.
 
 # Features
 
-- Automatic Xray download and update
-- Automatic SNI-spoofing binary management
-- Supports both Rust and Go SNI-spoofing backends
-- Real-world speed testing through actual proxy traffic
-- Latency-aware scoring system
-- Historical stability tracking
-- Exponential backoff for dead configs
-- Automatic failover and recovery
-- Live Rich TUI dashboard
-- Subscription URL support
-- REALITY support
-- TLS support
-- Cross-platform:
-  - Linux
-  - Windows
-  - macOS
+* Automatic Xray download and update
+* Automatic SNI-spoofing binary management
+* Supports both Rust and Go SNI-spoofing backends
+* Real-world speed testing through actual proxy traffic
+* Latency-aware scoring system
+* Historical stability tracking
+* Exponential backoff for dead configs
+* Automatic failover and recovery
+* Subscription URL support
+* Cross-platform:
+
+  * Linux
+  * Windows
+  * macOS
 
 ---
 
@@ -36,13 +34,15 @@ No GUI clients required. No manual switching. Fully automated.
 1. Reads configs from `configs.txt`
 2. Starts temporary isolated Xray instances for testing
 3. Performs:
-   - health checks
-   - latency measurement
-   - real download speed tests
+
+   * health checks
+   * latency measurement
+   * real download speed tests
 4. Calculates a weighted score using:
-   - speed
-   - latency
-   - historical stability
+
+   * speed
+   * latency
+   * historical stability
 5. Launches the highest-scoring config
 6. Continuously re-tests configs at configurable intervals
 7. Automatically switches only when improvement exceeds a threshold
@@ -50,9 +50,172 @@ No GUI clients required. No manual switching. Fully automated.
 
 ---
 
+# Supported Protocols
+
+| Protocol | Supported Transports                    |
+| -------- | --------------------------------------- |
+| VLESS    | WS, gRPC, xHTTP, HTTPUpgrade, SplitHTTP |
+| Trojan   | WS, gRPC, xHTTP, HTTPUpgrade, SplitHTTP |
+
+
+---
+
 # Requirements
 
-- Python 3.9+
-- `curl`
-- Internet access
-- SNI-spoofing backend
+* Python 3.9+
+* `curl`
+* Internet access
+* SNI-spoofing backend
+
+---
+
+# Installation
+
+## Clone the repository
+
+```bash
+git clone https://github.com/hrostami/sni-balancer.git
+cd sni-balancer
+```
+
+## Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+## Create `configs.txt`
+
+Supports:
+
+* `vless://`
+* `trojan://`
+* Subscription URLs
+* Base64 subscriptions
+
+Example:
+
+```text
+vless://uuid@host:port?...#MyConfig
+trojan://password@host:port?...#Server2
+https://subscription-url.example/sub
+```
+
+---
+
+# Running
+
+## Normal mode
+
+```bash
+python3 balancer.py
+```
+
+## Dry-run mode
+
+Tests all configs without launching the final Xray instance.
+
+```bash
+python3 balancer.py --dry-run
+```
+
+## Custom interval
+
+```bash
+python3 balancer.py --interval 300
+```
+
+## Custom SOCKS5 port
+
+```bash
+python3 balancer.py --port 1080
+```
+
+## Larger speed test
+
+```bash
+python3 balancer.py --test-size 10
+```
+
+## Update Xray
+
+```bash
+python3 balancer.py --update-xray
+```
+
+---
+
+# Command Line Options
+
+| Argument         | Description                       |
+| ---------------- | --------------------------------- |
+| `--dry-run`      | Test configs only                 |
+| `--interval`     | Seconds between test cycles       |
+| `--configs`      | Custom configs file               |
+| `--port`         | SOCKS5 listen port                |
+| `--display-time` | Full dashboard display duration   |
+| `--test-size`    | Download test size in MB          |
+| `--update-xray`  | Download/update Xray              |
+| `--sni-variant`  | `rust` or `go`                    |
+| `--sni-connect`  | Upstream address for SNI spoofing |
+| `--sni-fake`     | Fake SNI hostname                 |
+
+---
+
+# SNI Spoofing
+
+This project requires an external SNI-spoofing process.
+
+Supported implementations:
+
+* Rust backend
+* Go backend
+
+If the binary is missing, SNI-Balancer can automatically download it.
+
+---
+
+# Scoring System
+
+Each config receives a weighted score:
+
+| Metric    | Weight |
+| --------- | ------ |
+| Speed     | 40%    |
+| Stability | 30%    |
+| Latency   | 30%    |
+
+The balancer avoids unnecessary switching by requiring a minimum improvement threshold before changing the active config.
+
+Repeated failures trigger exponential backoff to avoid wasting resources on dead servers.
+
+
+---
+
+# Generated Files
+
+| File                  | Description               |
+| --------------------- | ------------------------- |
+| `xrayconfig.json`     | Active Xray config        |
+| `config_history.json` | Historical benchmark data |
+| `balancer.log`        | Runtime logs              |
+| `.xray_version`       | Installed Xray version    |
+
+---
+
+# Notes
+
+* The SOCKS5 proxy listens on all interfaces by default (`0.0.0.0`)
+* Temporary Xray instances are created during testing
+* Dead configs are skipped intelligently using exponential backoff
+* Xray is automatically relaunched if it crashes
+* Duplicate config names are automatically deduplicated
+* All generated files should remain ignored in Git
+
+---
+
+# Disclaimer
+
+This project is intended for educational and research purposes.
+
+Use responsibly and comply with local laws and regulations.
