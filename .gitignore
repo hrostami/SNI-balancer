@@ -1,7 +1,11 @@
 xray
+xray.exe
 xrayconfig.json
+config_history.json
 configs.txt
 __pycache__/
 *.pyc
 .DS_Store
+balancer.log*
+.xray_version
 venv/

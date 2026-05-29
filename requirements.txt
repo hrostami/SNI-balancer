@@ -1,2 +1,8 @@
 requests
 colorama
+aiohttp
+aiohttp-socks
+rich
+platform
+zipfile
+shutil
