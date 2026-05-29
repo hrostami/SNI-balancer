@@ -199,6 +199,27 @@ def _download_with_resume(url, dest_path, max_retries=5, chunk_size=8192):
     return False
 
 
+def _fetch_release_info(api_url, max_retries=4, timeout=5):
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(api_url, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+            return data["tag_name"], data["assets"]
+        except (requests.ConnectionError, requests.Timeout) as e:
+            wait = 2 * attempt + 1
+            console.print(
+                f"[yellow]Failed to reach {api_url} ({e}), retrying in {wait}s ({attempt + 1}/{max_retries})...[/yellow]"
+            )
+            logger.warning(f"Release info fetch failed attempt {attempt + 1}: {e}")
+            time.sleep(wait)
+        except Exception as e:
+            logger.error(f"Failed to fetch release info: {e}")
+            console.print(f"[red]Failed to fetch release info: {e}[/red]")
+            return None, None
+    return None, None
+
+
 # ── Xray check and update ─────────────────────────────────────────────────────────
 
 
@@ -230,15 +251,7 @@ def _get_xray_asset_name():
 
 
 def _get_latest_release_info():
-    try:
-        response = requests.get(XRAY_API, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        return data["tag_name"], data["assets"]
-    except Exception as e:
-        logger.error(f"Failed to fetch Xray release info: {e}")
-        console.print(f"[red]Failed to fetch Xray release info: {e}[/red]")
-        return None, None
+    return _fetch_release_info(XRAY_API)
 
 
 def _download_and_extract_xray(asset_url, asset_name):
@@ -470,11 +483,10 @@ def _download_sni_binary(variant):
     )
 
     try:
-        response = requests.get(api_url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        tag = data["tag_name"]
-        assets = data["assets"]
+        tag_name, assets = _fetch_release_info(api_url)
+        if not tag_name:
+            return False
+        tag = tag_name
     except Exception as e:
         logger.error(f"Failed to fetch SNI release info: {e}")
         console.print(f"[red]Failed to fetch release info: {e}[/red]")
