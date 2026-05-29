@@ -71,9 +71,9 @@ SOCKS_LISTEN = "0.0.0.0"
 SNI_PORT = 40443
 BASE_TEST_PORT = 19000
 TEST_URL = "https://speed.cloudflare.com/__down?bytes=1000000"
-HEALTH_URL = "https://www.apple.com/library/test/success.html"
+HEALTH_URL = "http://cp.cloudflare.com/generate_204"
 TEST_TIMEOUT = 15
-HEALTH_TIMEOUT = 5
+HEALTH_TIMEOUT = 10
 CHECK_INTERVAL = 30 * 60
 
 # ── Scoring system weights ─────────────────────────────────────────────────────
@@ -1120,7 +1120,7 @@ async def health_check(port: int) -> tuple[bool, int]:
     connector = ProxyConnector.from_url(proxy_url)
     timeout = aiohttp.ClientTimeout(
         total=HEALTH_TIMEOUT,
-        connect=3,
+        connect=8,
     )
 
     start = time.perf_counter()
@@ -1136,7 +1136,7 @@ async def health_check(port: int) -> tuple[bool, int]:
             ) as response:
                 latency_ms = int((time.perf_counter() - start) * 1000)
 
-                success = response.status == 200
+                success = response.status == 204
 
                 return success, latency_ms
 
@@ -1186,7 +1186,12 @@ def measure_speed(port, test_size=None):
             text=True,
             timeout=TEST_TIMEOUT + 3,
         )
-        speed_bytes = float(result.stdout.strip())
+        test_result = (
+            result.stdout.strip()
+            if sys.platform != "win32"
+            else result.stdout.strip()[1:-1]
+        )
+        speed_bytes = float(test_result)
         return speed_bytes / 1024 / 1024
     except:
         return 0.0
