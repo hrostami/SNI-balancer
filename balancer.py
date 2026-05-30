@@ -1418,7 +1418,7 @@ def create_layout(ranked, current_best, interval, remaining_seconds=None):
     top_show = 15  # Show top 10 in full view, or 3 in compact
 
     if remaining_seconds is not None:
-        top_show = 7
+        top_show = 15
 
     for i, (s, spd, score, lat) in enumerate(ranked[:top_show]):
         name = s.get("display_name", s["name"])[:28]
