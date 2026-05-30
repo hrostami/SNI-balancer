@@ -1,5 +1,3 @@
 requests
 colorama
-aiohttp
-aiohttp-socks
 rich
