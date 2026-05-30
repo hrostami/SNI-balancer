@@ -537,9 +537,9 @@ def _download_sni_binary(variant):
                 return False
             if win_files and variant == "rust":
                 for file in win_files:
-                    extracted = os.path.join(tmp_dir, file)
+                    w_extracted = os.path.join(tmp_dir, file)
                     win_dest = os.path.join(SCRIPT_DIR, file)
-                    shutil.move(extracted, win_dest)
+                    shutil.move(w_extracted, win_dest)
             shutil.move(extracted, dest)
         else:
             shutil.move(download_path, dest)
