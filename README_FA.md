@@ -70,8 +70,8 @@
 ## کلون کردن پروژه
 
 ```bash
-git clone https://github.com/yourname/sni-balancer.git
-cd sni-balancer
+git clone https://github.com/hrostami/SNI-balancer.git
+cd SNI-balancer
 ```
 
 ## نصب پیش نیاز ها
