@@ -21,9 +21,10 @@ from collections import deque
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
-import aiohttp
+# import aiohttp
 import requests
-from aiohttp_socks import ProxyConnector
+
+# from aiohttp_socks import ProxyConnector
 from colorama import Fore, Style, init
 from rich import box
 from rich.console import Console
