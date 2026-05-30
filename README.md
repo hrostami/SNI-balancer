@@ -71,7 +71,7 @@ No GUI clients required. No manual switching. Fully automated.
 ## Clone the repository
 
 ```bash
-git clone https://github.com/yourname/sni-balancer.git
+git clone https://github.com/hrostami/sni-balancer.git
 cd sni-balancer
 ```
 

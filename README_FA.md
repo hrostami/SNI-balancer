@@ -70,7 +70,7 @@
 ## کلون کردن پروژه
 
 ```bash
-git clone https://github.com/yourname/sni-balancer.git
+git clone https://github.com/hrostami/sni-balancer.git
 cd sni-balancer
 ```
 
